@@ -7,7 +7,7 @@ import json
 import os
 from typing import Dict, List, Optional, Tuple
 
-# csv logging
+
 class CSVTradeLogger:
     def __init__(self, csv_path: str, tickers: List[str]):
         self.csv_path = csv_path
@@ -41,11 +41,13 @@ class CSVTradeLogger:
         if rows:
             pd.DataFrame(rows).to_csv(self.csv_path, mode='a',
                                       header=not os.path.getsize(self.csv_path), index=False)
+            self._dedup_csv()  # <-- auto-dedup after backfill
 
     def log_now(self, prices: Dict[str, float], action_map: Dict[str, Dict],
                 positions_after: Dict[str, int], cash_after: float, note: str = ""):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         rows = []
+    
         for t in self.tickers:
             act = action_map.get(t, {"action":"NONE","quantity":0})
             rows.append({
@@ -60,6 +62,7 @@ class CSVTradeLogger:
             })
         pd.DataFrame(rows).to_csv(self.csv_path, mode='a',
                                   header=not os.path.getsize(self.csv_path), index=False)
+        self._dedup_csv()  # <-- auto-dedup after logging
 
     # ---- auto-backfill machinery ----
     def _last_logged_day(self) -> Optional[datetime]:
@@ -95,8 +98,7 @@ class CSVTradeLogger:
             note="auto backfill on start"
         )
         self._dedup_csv()
-
-
+        
 class PortfolioManager:
     def __init__(self, starting_cash=100000, data_file="portfolio_data.json",
                  csv_path: str = "trading_log.csv"):

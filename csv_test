@@ -1,0 +1,34 @@
+import pandas as pd
+
+CSV = "trading_log.csv"
+df = pd.read_csv(CSV, parse_dates=["timestamp"])
+
+print("Rows:", len(df))
+print("Columns:", list(df.columns))
+print(df.head(10))
+
+# required columns
+required = {"timestamp","ticker","close","action","quantity","position_after","cash_after","note"}
+print("Columns OK:", required.issubset(df.columns))
+
+# tickers present
+print("Tickers:", sorted(df["ticker"].unique()))
+
+# duplicates?
+dups = df.duplicated(subset=["timestamp","ticker"]).sum()
+print("Duplicate (timestamp,ticker) rows:", dups)
+
+# every timestamp should have exactly 5 tickers
+group = df.groupby(df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S"))["ticker"].nunique()
+bad = group[group != 5]
+print("Timestamps without 5 tickers:\n", bad if not bad.empty else "OK")
+
+# show latest rows & any real actions
+print("\nMost recent 15 rows:")
+print(df.sort_values("timestamp").tail(15))
+
+print("\nRecent non-NONE actions:")
+print(df[df["action"]!="NONE"].sort_values("timestamp").tail(10))
+
+# sanity: closes > 0
+print("\nNon-positive closes:", (df["close"]<=0).sum())
