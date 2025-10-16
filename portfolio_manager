@@ -1,15 +1,29 @@
+from csvlogger import CSVTradeLogger
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import random
+from datetime import datetime, timedelta
+import json
+import os
+from typing import Dict, List, Optional, Tuple
+
 class PortfolioManager:
     def __init__(self, starting_cash=100000, data_file="portfolio_data.json",
                  csv_path: str = "trading_log.csv"):
+        if starting_cash < 0:
+            raise ValueError("starting_cash cannot be negative")
         self.stocks = ['NVDA', 'MSFT', 'AAPL', 'JPM', 'UNH']
         self.trade_probability = 0.1
         self.shares_per_trade = 100
+        if not (0 <= self.trade_probability <= 1):
+            raise ValueError("trade_probability must be in [0,1]")
+        if self.shares_per_trade <= 0:
+            raise ValueError("shares_per_trade must be positive")
         self.data_file = data_file
         self.risk_free_rate = 0.05
-
         self.logger = CSVTradeLogger(csv_path, self.stocks)
         self.logger.autobackfill_on_start(default_lookback_days=365)
-
         if os.path.exists(data_file):
             self.load_data()
         else:
@@ -50,14 +64,19 @@ class PortfolioManager:
                 ticker = yf.Ticker(stock)
                 hist = ticker.history(period='1d')
                 if not hist.empty:
-                    prices[stock] = hist['Close'].iloc[-1]
+                    price = float(hist['Close'].iloc[-1])
+                    if price <= 0:
+                        raise ValueError("non-positive price")
+                    prices[stock] = price
                 else:
                     info = ticker.info
-                    prices[stock] = info.get('regularMarketPrice', 100)
+                    price = float(info.get('regularMarketPrice', 100))
+                    if price <= 0:
+                        price = 100.0
+                    prices[stock] = price
             return prices
-        except Exception as e:
-            print(f"Error fetching prices: {e}")
-            return {stock: random.uniform(100, 500) for stock in self.stocks}
+        except Exception:
+            return {stock: float(random.uniform(100, 500)) for stock in self.stocks}
 
     def get_sp500_data(self, start_date: datetime, end_date: datetime = None) -> pd.DataFrame:
         if end_date is None:
@@ -65,8 +84,7 @@ class PortfolioManager:
         try:
             spy = yf.Ticker('SPY')
             return spy.history(start=start_date, end=end_date)
-        except Exception as e:
-            print(f"Error fetching SP500 data: {e}")
+        except Exception:
             return pd.DataFrame()
 
     def snapshot_now(self, note="scheduled snapshot"):
@@ -74,8 +92,8 @@ class PortfolioManager:
         self.logger.log_now(
             prices=prices,
             action_map={},
-            positions_after={t: self.portfolio[t] for t in self.stocks},
-            cash_after=self.cash,
+            positions_after={t: int(self.portfolio[t]) for t in self.stocks},
+            cash_after=float(self.cash),
             note=note
         )
 
@@ -83,9 +101,10 @@ class PortfolioManager:
         if random.random() < self.trade_probability:
             stock_to_buy = random.choice(self.stocks)
             prices = self.get_current_prices()
-            price = prices[stock_to_buy]
+            price = float(prices[stock_to_buy])
+            if price <= 0:
+                return None
             cost = price * self.shares_per_trade
-
             if self.cash >= cost:
                 self.portfolio[stock_to_buy] += self.shares_per_trade
                 self.cash -= cost
@@ -98,36 +117,32 @@ class PortfolioManager:
                 }
                 self.trades.append(trade)
                 self.save_data()
-
                 action_map = {t: {"action":"NONE","quantity":0} for t in self.stocks}
                 action_map[stock_to_buy] = {"action":"BUY","quantity":self.shares_per_trade}
                 self.logger.log_now(
                     prices=prices,
                     action_map=action_map,
-                    positions_after={t: self.portfolio[t] for t in self.stocks},
-                    cash_after=self.cash,
+                    positions_after={t: int(self.portfolio[t]) for t in self.stocks},
+                    cash_after=float(self.cash),
                     note="auto-sim trade"
                 )
-                print(f"Trade executed: {self.shares_per_trade} {stock_to_buy} @ ${price:.2f}")
                 return trade
             else:
-                print(f"Insufficient cash for {stock_to_buy}")
                 prices = self.get_current_prices()
                 self.logger.log_now(
                     prices=prices,
                     action_map={},
-                    positions_after={t: self.portfolio[t] for t in self.stocks},
-                    cash_after=self.cash,
+                    positions_after={t: int(self.portfolio[t]) for t in self.stocks},
+                    cash_after=float(self.cash),
                     note="insufficient-cash snapshot"
                 )
         else:
-            print("No trade this turn")
             prices = self.get_current_prices()
             self.logger.log_now(
                 prices=prices,
                 action_map={},
-                positions_after={t: self.portfolio[t] for t in self.stocks},
-                cash_after=self.cash,
+                positions_after={t: int(self.portfolio[t]) for t in self.stocks},
+                cash_after=float(self.cash),
                 note="no-trade snapshot"
             )
         return None
@@ -148,21 +163,23 @@ class PortfolioManager:
     def calculate_portfolio_stats(self) -> Dict:
         prices = self.get_current_prices()
         stock_values = {}
-        total_stock_value = 0
+        total_stock_value = 0.0
         for stock in self.stocks:
-            shares = self.portfolio[stock]
-            current_price = prices[stock]
+            shares = int(self.portfolio[stock])
+            current_price = float(prices[stock])
+            if current_price <= 0:
+                current_price = 0.0
             value = shares * current_price
             stock_values[stock] = {'shares': shares, 'price': current_price, 'value': value}
             total_stock_value += value
-        total_portfolio_value = total_stock_value + self.cash
-        total_pnl = total_portfolio_value - self.initial_value
-        pnl_percent = (total_pnl / self.initial_value) * 100 if self.initial_value > 0 else 0
+        total_portfolio_value = total_stock_value + float(self.cash)
+        total_pnl = total_portfolio_value - float(self.initial_value)
+        pnl_percent = (total_pnl / float(self.initial_value)) * 100 if float(self.initial_value) > 0 else 0.0
         return {
             'stock_values': stock_values,
             'prices': prices,
             'total_stock_value': total_stock_value,
-            'cash': self.cash,
+            'cash': float(self.cash),
             'total_portfolio_value': total_portfolio_value,
             'total_pnl': total_pnl,
             'pnl_percent': pnl_percent
@@ -173,8 +190,8 @@ class PortfolioManager:
             return []
         returns = []
         for i in range(1, len(self.daily_values)):
-            prev_val = self.daily_values[i - 1]['value']
-            curr_val = self.daily_values[i]['value']
+            prev_val = float(self.daily_values[i - 1]['value'])
+            curr_val = float(self.daily_values[i]['value'])
             if prev_val > 0:
                 returns.append((curr_val - prev_val) / prev_val)
         return returns
@@ -182,11 +199,12 @@ class PortfolioManager:
     def calculate_sharpe_ratio(self, returns: List[float]) -> float:
         if len(returns) < 2:
             return 0.0
-        returns_array = np.array(returns)
-        excess_returns = returns_array - (self.risk_free_rate / 252)
-        if np.std(excess_returns) == 0:
+        returns_array = np.array(returns, dtype=float)
+        excess_returns = returns_array - (self.risk_free_rate / 252.0)
+        std = float(np.std(excess_returns))
+        if std == 0.0:
             return 0.0
-        return np.mean(excess_returns) / np.std(excess_returns) * np.sqrt(252)
+        return float(np.mean(excess_returns) / std * np.sqrt(252.0))
 
     def get_sp500_returns(self) -> Tuple[List[float], float]:
         start_date = datetime.combine(self.start_date, datetime.min.time())
@@ -194,7 +212,7 @@ class PortfolioManager:
         if sp500_data.empty:
             return [], 0.0
         sp500_data['daily_return'] = sp500_data['Close'].pct_change()
-        sp500_returns = sp500_data['daily_return'].dropna().tolist()
+        sp500_returns = sp500_data['daily_return'].dropna().astype(float).tolist()
         sp500_sharpe = self.calculate_sharpe_ratio(sp500_returns)
         return sp500_returns, sp500_sharpe
 
@@ -203,17 +221,18 @@ class PortfolioManager:
         portfolio_returns = self.calculate_returns()
         portfolio_sharpe = self.calculate_sharpe_ratio(portfolio_returns)
         sp500_returns, sp500_sharpe = self.get_sp500_returns()
-        portfolio_volatility = np.std(portfolio_returns) * np.sqrt(252) if portfolio_returns else 0
-        sp500_volatility = np.std(sp500_returns) * np.sqrt(252) if sp500_returns else 0
+        portfolio_volatility = float(np.std(portfolio_returns)) * np.sqrt(252.0) if portfolio_returns else 0.0
+        sp500_volatility = float(np.std(sp500_returns)) * np.sqrt(252.0) if sp500_returns else 0.0
         stats = self.calculate_portfolio_stats()
-        portfolio_total_return = stats['pnl_percent'] / 100
+        portfolio_total_return = stats['pnl_percent'] / 100.0
         start_date = datetime.combine(self.start_date, datetime.min.time())
         sp500_data = self.get_sp500_data(start_date)
-        sp500_total_return = 0
+        sp500_total_return = 0.0
         if not sp500_data.empty:
-            initial_sp500 = sp500_data['Close'].iloc[0]
-            current_sp500 = sp500_data['Close'].iloc[-1]
-            sp500_total_return = (current_sp500 - initial_sp500) / initial_sp500
+            initial_sp500 = float(sp500_data['Close'].iloc[0])
+            current_sp500 = float(sp500_data['Close'].iloc[-1])
+            if initial_sp500 > 0:
+                sp500_total_return = (current_sp500 - initial_sp500) / initial_sp500
         return {
             'portfolio': {
                 'total_return': portfolio_total_return,
@@ -228,56 +247,8 @@ class PortfolioManager:
             }
         }
 
-    def display_portfolio_summary(self):
-        stats = self.calculate_portfolio_stats()
-        print("\nPORTFOLIO SUMMARY")
-        print("-" * 50)
-        print(f"Total Value: ${stats['total_portfolio_value']:,.2f}")
-        print(f"P&L: ${stats['total_pnl']:,.2f} ({stats['pnl_percent']:+.2f}%)")
-        print(f"Cash: ${stats['cash']:,.2f}")
-        print(f"Stock Value: ${stats['total_stock_value']:,.2f}")
-        print(f"\nHOLDINGS:")
-        for stock, data in stats['stock_values'].items():
-            if data['shares'] > 0:
-                weight = (data['value'] / stats['total_portfolio_value']) * 100
-                print(f"{stock}: {data['shares']} shares, ${data['value']:,.2f} ({weight:.1f}%)")
-        print(f"\nTotal Trades: {len(self.trades)}")
-
-    def display_comparison(self):
-        comparison = self.compare_to_sp500()
-        print("\nPERFORMANCE COMPARISON")
-        print("-" * 50)
-        portfolio = comparison['portfolio']
-        sp500 = comparison['sp500']
-        print(f"{'Metric':<20} {'Portfolio':<15} {'SP500':<15}")
-        print("-" * 50)
-        print(f"{'Total Return':<20} {portfolio['total_return'] * 100:>+8.2f}%     {sp500['total_return'] * 100:>+8.2f}%")
-        print(f"{'Sharpe Ratio':<20} {portfolio['sharpe_ratio']:>8.3f}       {sp500['sharpe_ratio']:>8.3f}")
-        print(f"{'Volatility':<20} {portfolio['volatility'] * 100:>8.2f}%       {sp500['volatility'] * 100:>8.2f}%")
-        print(f"{'Trades':<20} {len(self.trades):>8d}       {'N/A':>8}")
-
-    def run_simulation_turns(self, num_turns=10):
-        trades_executed = 0
-        for turn in range(1, num_turns + 1):
-            print(f"Turn {turn}")
-            trade = self.simulate_trade()
-            if trade:
-                trades_executed += 1
-        print(f"Simulation complete: {trades_executed}/{num_turns} trades executed")
-        return trades_executed
-
-    def reset_portfolio(self):
-        self.portfolio = {stock: 0 for stock in self.stocks}
-        self.cash = self.initial_value
-        self.trades = []
-        self.daily_values = []
-        self.start_date = datetime.now().date()
-        self.save_data()
-        print("Portfolio reset")
-
-
 def main():
-    portfolio = PortfolioManager(csv_path="trading_log.csv")
+    pm = PortfolioManager(csv_path="trading_log.csv")
     while True:
         print("\nPORTFOLIO MANAGER")
         print("1. View Portfolio")
@@ -290,32 +261,31 @@ def main():
         print("8. Snapshot Now (no-trade)")
         choice = input("\nSelect (1-8): ").strip()
         if choice == '1':
-            portfolio.display_portfolio_summary()
+            stats = pm.calculate_portfolio_stats()
+            print(stats)
         elif choice == '2':
-            portfolio.simulate_trade()
+            pm.simulate_trade()
         elif choice == '3':
             turns = int(input("Number of turns (default 10): ") or "10")
-            portfolio.run_simulation_turns(turns)
-            portfolio.display_portfolio_summary()
+            pm.run_simulation_turns(turns)
         elif choice == '4':
-            portfolio.display_comparison()
+            print(pm.compare_to_sp500())
         elif choice == '5':
             confirm = input("Reset portfolio? (y/N): ").lower()
             if confirm == 'y':
-                portfolio.reset_portfolio()
+                pm.reset_portfolio()
         elif choice == '6':
             break
         elif choice == '7':
             start = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-            portfolio.logger.backfill_history(start=start, end=None, interval="1d",
-                                              note="history backfill (menu)")
+            pm.logger.backfill_history(start=start, end=None, interval="1d",
+                                       note="history backfill (menu)")
             print("Backfill complete.")
         elif choice == '8':
-            portfolio.snapshot_now(note="manual snapshot")
+            pm.snapshot_now(note="manual snapshot")
             print("Snapshot logged.")
         else:
             print("Invalid choice")
-
 
 if __name__ == "__main__":
     main()

@@ -1,17 +1,13 @@
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import random
-from datetime import datetime, timedelta
-import json
 import os
-from typing import Dict, List, Optional, Tuple
-
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 
 class CSVTradeLogger:
     def __init__(self, csv_path: str, tickers: List[str]):
         self.csv_path = csv_path
-        self.tickers = tickers
+        self.tickers = self._validate_tickers(tickers)
         self._ensure_csv()
 
     def _ensure_csv(self):
@@ -28,6 +24,7 @@ class CSVTradeLogger:
             df = data[t] if t in data else data
             if isinstance(df, pd.DataFrame) and "Close" in df.columns:
                 for ts, close in df["Close"].dropna().items():
+                    self._assert_price(close, t, "backfill")
                     rows.append({
                         "timestamp": pd.Timestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
                         "ticker": t,
@@ -46,17 +43,25 @@ class CSVTradeLogger:
     def log_now(self, prices: Dict[str, float], action_map: Dict[str, Dict],
                 positions_after: Dict[str, int], cash_after: float, note: str = ""):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._assert_cash(cash_after)
         rows = []
-    
         for t in self.tickers:
             act = action_map.get(t, {"action":"NONE","quantity":0})
+            action = str(act.get("action","NONE")).upper()
+            qty = int(act.get("quantity",0))
+            pos_after = int(positions_after.get(t, 0))
+            price = prices.get(t, float("nan"))
+            self._assert_action(action, t)
+            self._assert_quantity(qty, t)
+            self._assert_position(pos_after, t)
+            self._assert_price(price, t, "log_now")
             rows.append({
                 "timestamp": ts,
                 "ticker": t,
-                "close": float(prices.get(t, float("nan"))),
-                "action": act["action"],
-                "quantity": int(act["quantity"]),
-                "position_after": int(positions_after.get(t, 0)),
+                "close": float(price),
+                "action": action,
+                "quantity": qty,
+                "position_after": pos_after,
                 "cash_after": float(cash_after),
                 "note": note
             })
@@ -98,4 +103,53 @@ class CSVTradeLogger:
             note="auto backfill on start"
         )
         self._dedup_csv()
-        
+
+    def _validate_tickers(self, tickers: List[str]) -> List[str]:
+        if not isinstance(tickers, list) or not tickers:
+            raise ValueError("tickers must be a non-empty list of symbols.")
+        clean = []
+        for t in tickers:
+            if not isinstance(t, str) or not t.strip():
+                raise ValueError(f"Invalid ticker: {t!r}")
+            clean.append(t.strip().upper())
+        seen = set()
+        uniq = []
+        for t in clean:
+            if t not in seen:
+                uniq.append(t)
+                seen.add(t)
+        return uniq
+
+    def _assert_action(self, action: str, ticker: str) -> None:
+        if action not in {"BUY","SELL","NONE"}:
+            raise ValueError(f"[{ticker}] invalid action: {action}")
+
+    def _assert_quantity(self, qty: int, ticker: str) -> None:
+        if not isinstance(qty, int):
+            raise ValueError(f"[{ticker}] quantity must be int")
+        if qty < 0:
+            raise ValueError(f"[{ticker}] quantity cannot be negative")
+
+    def _assert_position(self, pos_after: int, ticker: str) -> None:
+        if not isinstance(pos_after, int):
+            raise ValueError(f"[{ticker}] position_after must be int")
+        if pos_after < 0:
+            raise ValueError(f"[{ticker}] position_after cannot be negative")
+
+    def _assert_price(self, price: float, ticker: str, context: str) -> None:
+        if pd.isna(price):
+            raise ValueError(f"[{ticker}] price is NaN in {context}")
+        try:
+            p = float(price)
+        except Exception:
+            raise ValueError(f"[{ticker}] price must be numeric in {context}")
+        if p < 0:
+            raise ValueError(f"[{ticker}] price cannot be negative in {context}")
+
+    def _assert_cash(self, cash_after: float) -> None:
+        try:
+            c = float(cash_after)
+        except Exception:
+            raise ValueError("cash_after must be numeric")
+        if c < 0:
+            raise ValueError("cash_after cannot be negative")
