@@ -109,7 +109,7 @@ class PortfolioManager:
                 self.portfolio[stock_to_buy] += self.shares_per_trade
                 self.cash -= cost
                 trade = {
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': datetime.utcnow().isoformat() + "Z",
                     'stock': stock_to_buy,
                     'shares': self.shares_per_trade,
                     'price': price,
@@ -246,46 +246,3 @@ class PortfolioManager:
                 'volatility': sp500_volatility
             }
         }
-
-def main():
-    pm = PortfolioManager(csv_path="trading_log.csv")
-    while True:
-        print("\nPORTFOLIO MANAGER")
-        print("1. View Portfolio")
-        print("2. Simulate Trade")
-        print("3. Run Multiple Turns")
-        print("4. Compare to SP500")
-        print("5. Reset Portfolio")
-        print("6. Exit")
-        print("7. Backfill History (1y daily)")
-        print("8. Snapshot Now (no-trade)")
-        choice = input("\nSelect (1-8): ").strip()
-        if choice == '1':
-            stats = pm.calculate_portfolio_stats()
-            print(stats)
-        elif choice == '2':
-            pm.simulate_trade()
-        elif choice == '3':
-            turns = int(input("Number of turns (default 10): ") or "10")
-            pm.run_simulation_turns(turns)
-        elif choice == '4':
-            print(pm.compare_to_sp500())
-        elif choice == '5':
-            confirm = input("Reset portfolio? (y/N): ").lower()
-            if confirm == 'y':
-                pm.reset_portfolio()
-        elif choice == '6':
-            break
-        elif choice == '7':
-            start = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-            pm.logger.backfill_history(start=start, end=None, interval="1d",
-                                       note="history backfill (menu)")
-            print("Backfill complete.")
-        elif choice == '8':
-            pm.snapshot_now(note="manual snapshot")
-            print("Snapshot logged.")
-        else:
-            print("Invalid choice")
-
-if __name__ == "__main__":
-    main()
