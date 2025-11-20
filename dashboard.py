@@ -89,7 +89,7 @@ class PortfolioDashboard:
 
         winning_trades = 0
         for _, trade in trades.iterrows():
-            # Check if stock price increased after purchase
+            # Check if stock price increased after purchase 
             future_prices = df[(df['ticker'] == trade['ticker']) &
                                (df['timestamp'] > trade['timestamp'])]['close']
             if not future_prices.empty and future_prices.iloc[-1] > trade['close']:
@@ -159,21 +159,26 @@ class PortfolioDashboard:
 
             # Control buttons with improved styling
             html.Div([
-                html.Button('🎲 Simulate Trade', id='simulate-btn', n_clicks=0,
+                html.Button('Simulate Trade', id='simulate-btn', n_clicks=0,
                             style={'marginRight': 10, 'padding': '12px 24px', 'backgroundColor': '#3498db',
                                    'color': 'white', 'border': 'none', 'borderRadius': '8px',
                                    'fontSize': '16px', 'cursor': 'pointer', 'fontWeight': 'bold',
                                    'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'}),
-                html.Button('📸 Take Snapshot', id='snapshot-btn', n_clicks=0,
+                html.Button('Take Snapshot', id='snapshot-btn', n_clicks=0,
                             style={'marginRight': 10, 'padding': '12px 24px', 'backgroundColor': '#27ae60',
                                    'color': 'white', 'border': 'none', 'borderRadius': '8px',
                                    'fontSize': '16px', 'cursor': 'pointer', 'fontWeight': 'bold',
                                    'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'}),
-                html.Button('🔄 Reset Portfolio', id='reset-btn', n_clicks=0,
+                html.Button('Backfill CSV', id='backfill-btn', n_clicks=0,
+                            style={'marginRight': 10, 'padding': '12px 24px', 'backgroundColor': '#8e44ad',
+                                   'color': 'white', 'border': 'none', 'borderRadius': '8px',
+                                   'fontSize': '16px', 'cursor': 'pointer', 'fontWeight': 'bold',
+                                   'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'}),
+                html.Button('Reset Portfolio', id='reset-btn', n_clicks=0,
                             style={'padding': '12px 24px', 'backgroundColor': '#e74c3c', 'color': 'white',
                                    'border': 'none', 'borderRadius': '8px', 'fontSize': '16px',
                                    'cursor': 'pointer', 'fontWeight': 'bold',
-                                   'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'})
+                                   'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'}),
             ], style={'textAlign': 'center', 'marginBottom': 30}),
 
             # Auto-refresh interval
@@ -215,12 +220,12 @@ class PortfolioDashboard:
             # Charts row - 3 charts
             html.Div([
                 html.Div([
-                    html.H3("📊 Portfolio Value Over Time", style={'textAlign': 'center', 'color': '#34495e'}),
+                    html.H3("Portfolio Value Over Time", style={'textAlign': 'center', 'color': '#34495e'}),
                     dcc.Graph(id='portfolio-timeline')
                 ], style={'width': '48%', 'display': 'inline-block', 'padding': '10px'}),
 
                 html.Div([
-                    html.H3("💹 Stock Prices", style={'textAlign': 'center', 'color': '#34495e'}),
+                    html.H3("Stock Prices", style={'textAlign': 'center', 'color': '#34495e'}),
                     dcc.Graph(id='stock-prices')
                 ], style={'width': '48%', 'float': 'right', 'display': 'inline-block', 'padding': '10px'})
             ]),
@@ -228,12 +233,12 @@ class PortfolioDashboard:
             # New row for additional charts
             html.Div([
                 html.Div([
-                    html.H3("📉 Returns Distribution", style={'textAlign': 'center', 'color': '#34495e'}),
+                    html.H3("Returns Distribution", style={'textAlign': 'center', 'color': '#34495e'}),
                     dcc.Graph(id='returns-histogram')
                 ], style={'width': '48%', 'display': 'inline-block', 'padding': '10px'}),
 
                 html.Div([
-                    html.H3("🎯 Trade Performance", style={'textAlign': 'center', 'color': '#34495e'}),
+                    html.H3("Trade Performance", style={'textAlign': 'center', 'color': '#34495e'}),
                     dcc.Graph(id='trade-performance')
                 ], style={'width': '48%', 'float': 'right', 'display': 'inline-block', 'padding': '10px'})
             ])
@@ -254,9 +259,10 @@ class PortfolioDashboard:
             [Input('interval-component', 'n_intervals'),
              Input('simulate-btn', 'n_clicks'),
              Input('snapshot-btn', 'n_clicks'),
+             Input('backfill-btn', 'n_clicks'),
              Input('reset-btn', 'n_clicks')]
         )
-        def update_dashboard(n_intervals, sim_clicks, snap_clicks, reset_clicks):
+        def update_dashboard(n_intervals, sim_clicks, snap_clicks, backfill_clicks, reset_clicks):
             status_msg = ""
 
             # Handle button clicks
@@ -265,12 +271,18 @@ class PortfolioDashboard:
                 if button_id == 'simulate-btn' and sim_clicks > 0:
                     trade = self.pm.simulate_trade()
                     if trade:
-                        status_msg = f"✅ Trade executed: {trade['shares']} {trade['stock']} @ ${trade['price']:.2f}"
+                        status_msg = f"Trade executed: {trade['shares']} {trade['stock']} @ ${trade['price']:.2f}"
                     else:
-                        status_msg = "ℹ️ No trade executed this turn"
+                        status_msg = "ℹNo trade executed this turn"
                 elif button_id == 'snapshot-btn' and snap_clicks > 0:
                     self.pm.snapshot_now("dashboard snapshot")
                     status_msg = "📸 Portfolio snapshot saved"
+                elif button_id == 'backfill-btn' and backfill_clicks > 0:
+                    ok = self.pm.logger.manual_backfill()
+                    if ok:
+                        status_msg = "CSV backfilled with latest history"
+                    else:
+                        status_msg = " No new history to backfill (or cooldown active)"
                 elif button_id == 'reset-btn' and reset_clicks > 0:
                     self.pm.reset_portfolio()
                     status_msg = "🔄 Portfolio reset to initial state"
@@ -297,12 +309,12 @@ class PortfolioDashboard:
                 html.Div([
                     html.Div([
                         html.Div(f"${stats['cash']:,.2f}", style={'fontSize': 18, 'fontWeight': 'bold'}),
-                        html.P("💵 Cash", style={'margin': 0, 'fontSize': 14, 'color': '#7f8c8d'})
+                        html.P(" Cash", style={'margin': 0, 'fontSize': 14, 'color': '#7f8c8d'})
                     ], style={'textAlign': 'center', 'width': '50%', 'display': 'inline-block'}),
 
                     html.Div([
                         html.Div(f"${stats['total_stock_value']:,.2f}", style={'fontSize': 18, 'fontWeight': 'bold'}),
-                        html.P("📊 Stock Value", style={'margin': 0, 'fontSize': 14, 'color': '#7f8c8d'})
+                        html.P(" Stock Value", style={'margin': 0, 'fontSize': 14, 'color': '#7f8c8d'})
                     ], style={'textAlign': 'center', 'width': '50%', 'display': 'inline-block'})
                 ])
             ], style=stats_style)
@@ -312,7 +324,6 @@ class PortfolioDashboard:
             for stock, data in stats['stock_values'].items():
                 if data['shares'] > 0:
                     weight = (data['value'] / stats['total_portfolio_value']) * 100
-                    # Calculate simple gain/loss based on current position
                     holdings_data.append(
                         [stock, data['shares'], f"${data['price']:.2f}", f"${data['value']:,.2f}", f"{weight:.1f}%"])
 
@@ -377,7 +388,7 @@ class PortfolioDashboard:
                 recent_trades_display = html.Div(trades_list, style={'backgroundColor': 'white',
                                                                      'borderRadius': '12px', 'padding': '10px'})
 
-            # Portfolio pie chart with improved colors
+            # Portfolio pie chart
             pie_data = []
             pie_labels = []
             pie_colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#34495e']
@@ -410,9 +421,8 @@ class PortfolioDashboard:
                 plot_bgcolor='rgba(0,0,0,0)'
             )
 
-            # Portfolio timeline with enhanced visualization
+            # Portfolio timeline
             timeline_fig = go.Figure()
-
             if not df.empty and 'cash_after' in df.columns:
                 portfolio_data = []
                 for timestamp in df['timestamp'].dt.floor('h').unique():
@@ -432,8 +442,6 @@ class PortfolioDashboard:
 
                 if portfolio_data:
                     portfolio_df = pd.DataFrame(portfolio_data)
-
-                    # Color gradient based on performance
                     colors = ['#27ae60' if v >= self.pm.initial_value else '#e74c3c'
                               for v in portfolio_df['value']]
 
@@ -469,7 +477,7 @@ class PortfolioDashboard:
                 yaxis=dict(gridcolor='#ecf0f1')
             )
 
-            # Stock prices chart with improved styling
+            # Stock prices chart
             prices_fig = go.Figure()
             if not df.empty:
                 colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6']

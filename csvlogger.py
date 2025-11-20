@@ -5,8 +5,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 class CSVTradeLogger:
-    BASE_COLS = ["timestamp","ticker","close","action","quantity","position_after","cash_after","note"]
-    EXTRA_COLS = ["event_id","kind","price_source","cash_delta","position_before","out_of_order"]
+    BASE_COLS = ["timestamp","ticker","close","action","quantity",
+                 "position_after","cash_after","note"]
+    EXTRA_COLS = ["event_id","kind","price_source","cash_delta",
+                  "position_before","out_of_order"]
     SCHEMA = BASE_COLS + EXTRA_COLS
 
     def __init__(self, csv_path: str, tickers: List[str]):
@@ -14,34 +16,109 @@ class CSVTradeLogger:
         self.tickers = self._validate_tickers(tickers)
         self._ensure_csv()
 
+        # for manual backfill
+        self._last_backfill_ts = None       # prevents spam clicking
+        self._cooldown_seconds = 60         # limit: 1 request per minute
+
+    # ------------------------------------------------------------
+    # CSV + Schema Handling
+    # ------------------------------------------------------------
+
     def _ensure_csv(self):
         os.makedirs(os.path.dirname(self.csv_path) or ".", exist_ok=True)
         if not os.path.exists(self.csv_path):
-            pd.DataFrame(columns=self.SCHEMA).to_csv(self.csv_path, index=False, encoding="utf-8", lineterminator="\n")
+            pd.DataFrame(columns=self.SCHEMA).to_csv(
+                self.csv_path, index=False, encoding="utf-8", lineterminator="\n"
+            )
         else:
             try:
                 df = pd.read_csv(self.csv_path, dtype=str)
             except Exception:
                 df = pd.DataFrame(columns=self.SCHEMA)
+
             for c in self.SCHEMA:
                 if c not in df.columns:
                     df[c] = None
+
             df = df[self.SCHEMA]
             tmp = self.csv_path + ".tmp"
             df.to_csv(tmp, index=False, encoding="utf-8", lineterminator="\n")
             os.replace(tmp, self.csv_path)
 
-    def backfill_history(self, start: str, end: Optional[str] = None, interval: str = "1d",
-                         note: str = "history backfill"):
-        data = yf.download(self.tickers, start=start, end=end, interval=interval,
-                           group_by='ticker', auto_adjust=False, progress=False)
+    # ------------------------------------------------------------
+    # Manual Backfill 
+    # ------------------------------------------------------------
+
+    def manual_backfill(self, default_lookback_days: int = 365,
+                        interval: str = "1d",
+                        note: str = "manual backfill") -> bool:
+        """
+        Triggered by dashboard button.
+        Backfills ONLY missing dates since last_logged_day().
+        Has cooldown to avoid yfinance rate limits.
+        Returns True if new data was fetched, False otherwise.
+        """
+
+        now = datetime.now(timezone.utc)
+
+        # Prevent spam-pressing
+        if self._last_backfill_ts and \
+           (now - self._last_backfill_ts).total_seconds() < self._cooldown_seconds:
+            return False
+
+        today = now.date()
+        last_day = self._last_logged_day()
+
+        # If no history exists, fetch up to 1 year
+        if last_day is None:
+            start_dt = today - timedelta(days=default_lookback_days)
+        else:
+            start_dt = (last_day + timedelta(days=1)).date()
+
+        if start_dt > today:
+            return False
+
+        # Use existing backfill method
+        self.backfill_history(
+            start=start_dt.strftime("%Y-%m-%d"),
+            end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
+            interval=interval,
+            note=note
+        )
+
+        self._last_backfill_ts = now
+        return True
+
+    # ------------------------------------------------------------
+    # History Fetching
+    # ------------------------------------------------------------
+
+    def backfill_history(self, start: str, end: Optional[str] = None,
+                         interval: str = "1d", note: str = "history backfill"):
+
+        data = yf.download(
+            self.tickers,
+            start=start,
+            end=end,
+            interval=interval,
+            group_by='ticker',
+            auto_adjust=False,
+            progress=False
+        )
+
         rows = []
         for t in self.tickers:
             df = data[t] if t in getattr(data, "keys", lambda: [])() else data
             if isinstance(df, pd.DataFrame) and "Close" in df.columns:
                 for ts, close in df["Close"].dropna().items():
                     self._assert_price(close, t, "backfill")
-                    timestamp = pd.Timestamp(ts).tz_localize(None).to_pydatetime().replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                    timestamp = (pd.Timestamp(ts)
+                                 .tz_localize(None)
+                                 .to_pydatetime()
+                                 .replace(tzinfo=timezone.utc)
+                                 .strftime("%Y-%m-%dT%H:%M:%SZ"))
+
                     row = {
                         "timestamp": timestamp,
                         "ticker": t,
@@ -59,34 +136,55 @@ class CSVTradeLogger:
                     }
                     row["event_id"] = self._event_id(row)
                     rows.append(row)
+
         if rows:
             self._append_rows_atomic(rows)
             self._dedup_csv()
 
+    # ------------------------------------------------------------
+    # Realtime Logging
+    # ------------------------------------------------------------
+
     def log_now(self, prices: Dict[str, float], action_map: Dict[str, Dict],
                 positions_after: Dict[str, int], cash_after: float, note: str = ""):
+
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         self._assert_cash(cash_after)
         rows = []
+
         last_map = self._last_ts_per_ticker()
+
         for t in self.tickers:
-            act = action_map.get(t, {"action":"NONE","quantity":0})
-            action = str(act.get("action","NONE")).upper()
-            qty = int(act.get("quantity",0))
+            act = action_map.get(t, {"action": "NONE", "quantity": 0})
+            action = str(act.get("action", "NONE")).upper()
+            qty = int(act.get("quantity", 0))
             pos_after = int(positions_after.get(t, 0))
             price = prices.get(t, float("nan"))
+
             self._assert_action(action, t)
             self._assert_quantity(qty, t, action)
             self._assert_position(pos_after, t, action, qty)
             self._assert_price(price, t, "log_now")
-            pos_before = pos_after - qty if action=="BUY" else (pos_after + qty if action=="SELL" else pos_after)
-            cash_delta = (-qty*float(price)) if action=="BUY" else (qty*float(price) if action=="SELL" else 0.0)
+
+            pos_before = (
+                pos_after - qty if action == "BUY" else
+                pos_after + qty if action == "SELL" else
+                pos_after
+            )
+
+            cash_delta = (
+                -qty * float(price) if action == "BUY"
+                else qty * float(price) if action == "SELL"
+                else 0.0
+            )
+
             out_of_order = False
             try:
                 last_ts = last_map.get(t)
                 out_of_order = (last_ts is not None and ts < last_ts)
             except Exception:
                 out_of_order = False
+
             row = {
                 "timestamp": ts,
                 "ticker": t,
@@ -104,10 +202,14 @@ class CSVTradeLogger:
             }
             row["event_id"] = self._event_id(row)
             rows.append(row)
+
         self._append_rows_atomic(rows)
         self._dedup_csv()
 
-    # ---- auto-backfill machinery ----
+    # ------------------------------------------------------------
+    # Utilities (unchanged)
+    # ------------------------------------------------------------
+
     def _last_logged_day(self) -> Optional[datetime]:
         if not os.path.exists(self.csv_path) or os.path.getsize(self.csv_path) == 0:
             return None
@@ -115,20 +217,27 @@ class CSVTradeLogger:
             df = pd.read_csv(self.csv_path, parse_dates=["timestamp"])
             if df.empty:
                 return None
-            return df["timestamp"].dt.tz_localize("UTC", nonexistent="shift_forward", ambiguous="NaT").dt.normalize().max().to_pydatetime()
+            return (df["timestamp"]
+                    .dt.tz_localize("UTC", nonexistent="shift_forward", ambiguous="NaT")
+                    .dt.normalize()
+                    .max()
+                    .to_pydatetime())
         except Exception:
             return None
 
     def _dedup_csv(self):
         try:
-            df = pd.read_csv(self.csv_path, dtype={"timestamp":str})
+            df = pd.read_csv(self.csv_path, dtype={"timestamp": str})
             for c in self.SCHEMA:
                 if c not in df.columns:
                     df[c] = None
             if "event_id" in df.columns:
                 df = df.drop_duplicates(subset=["event_id"], keep="last")
             else:
-                df = df.drop_duplicates(subset=["timestamp","ticker","action","quantity","close"], keep="last")
+                df = df.drop_duplicates(
+                    subset=["timestamp","ticker","action","quantity","close"],
+                    keep="last"
+                )
             df = df[self.SCHEMA]
             tmp = self.csv_path + ".tmp"
             df.to_csv(tmp, index=False, encoding="utf-8", lineterminator="\n")
@@ -136,31 +245,16 @@ class CSVTradeLogger:
         except Exception:
             pass
 
-    def autobackfill_on_start(self, default_lookback_days: int = 365):
-        today = datetime.now(timezone.utc).date()
-        last_day = self._last_logged_day()
-        start_dt = (datetime.now(timezone.utc) - timedelta(days=default_lookback_days)) if last_day is None else (last_day + timedelta(days=1))
-        if start_dt.date() > today:
-            self._dedup_csv()
-            return
-        self.backfill_history(
-            start=start_dt.strftime("%Y-%m-%d"),
-            end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
-            interval="1d",
-            note="auto backfill on start"
-        )
-        self._dedup_csv()
-
     def _validate_tickers(self, tickers: List[str]) -> List[str]:
         if not isinstance(tickers, list) or not tickers:
-            raise ValueError("tickers must be a non-empty list of symbols.")
+            raise ValueError("tickers must be a non-empty list.")
         clean = []
         for t in tickers:
             if not isinstance(t, str) or not t.strip():
                 raise ValueError(f"Invalid ticker: {t!r}")
             clean.append(t.strip().upper())
-        seen = set()
         uniq = []
+        seen = set()
         for t in clean:
             if t not in seen:
                 uniq.append(t)
@@ -173,17 +267,15 @@ class CSVTradeLogger:
 
     def _assert_quantity(self, qty: int, ticker: str, action: str) -> None:
         if not isinstance(qty, int):
-            raise ValueError(f"[{ticker}] quantity must be int")
+            raise ValueError(f"[{ticker}] qty must be int")
         if action=="NONE" and qty != 0:
-            raise ValueError(f"[{ticker}] quantity must be 0 when action is NONE")
+            raise ValueError(f"[{ticker}] qty must be 0 for NONE")
         if action in {"BUY","SELL"} and qty <= 0:
-            raise ValueError(f"[{ticker}] quantity must be positive for {action}")
+            raise ValueError(f"[{ticker}] qty must be >0 for {action}")
 
     def _assert_position(self, pos_after: int, ticker: str, action: str, qty: int) -> None:
         if not isinstance(pos_after, int):
             raise ValueError(f"[{ticker}] position_after must be int")
-        if action=="SELL" and pos_after < 0:
-            raise ValueError(f"[{ticker}] position_after cannot be negative")
         if pos_after < 0:
             raise ValueError(f"[{ticker}] position_after cannot be negative")
 
@@ -193,7 +285,7 @@ class CSVTradeLogger:
         try:
             p = float(price)
         except Exception:
-            raise ValueError(f"[{ticker}] price must be numeric in {context}")
+            raise ValueError(f"[{ticker}] invalid price in {context}")
         if p <= 0:
             raise ValueError(f"[{ticker}] price must be > 0 in {context}")
 
@@ -232,7 +324,10 @@ class CSVTradeLogger:
         if "event_id" in df_all.columns:
             df_all = df_all.drop_duplicates(subset=["event_id"], keep="last")
         else:
-            df_all = df_all.drop_duplicates(subset=["timestamp","ticker","action","quantity","close"], keep="last")
+            df_all = df_all.drop_duplicates(
+                subset=["timestamp","ticker","action","quantity","close"],
+                keep="last"
+            )
         tmp = self.csv_path + ".tmp"
         df_all.to_csv(tmp, index=False, encoding="utf-8", lineterminator="\n")
         os.replace(tmp, self.csv_path)
