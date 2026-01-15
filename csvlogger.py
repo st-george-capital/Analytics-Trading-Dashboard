@@ -1,6 +1,6 @@
-import yfinance as yf
+import os, hashlib, time
 import pandas as pd
-import os, tempfile, hashlib
+import requests
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -11,18 +11,18 @@ class CSVTradeLogger:
                   "position_before","out_of_order"]
     SCHEMA = BASE_COLS + EXTRA_COLS
 
+    AV_URL = "https://www.alphavantage.co/query"
+
     def __init__(self, csv_path: str, tickers: List[str]):
         self.csv_path = csv_path
         self.tickers = self._validate_tickers(tickers)
         self._ensure_csv()
 
-        # for manual backfill
-        self._last_backfill_ts = None       # prevents spam clicking
-        self._cooldown_seconds = 60         # limit: 1 request per minute
+        self._last_backfill_ts = None
+        self._cooldown_seconds = 60
 
-    # ------------------------------------------------------------
-    # CSV + Schema Handling
-    # ------------------------------------------------------------
+        self._min_seconds_between_calls = 1.0
+        self._last_api_call_time = 0.0
 
     def _ensure_csv(self):
         os.makedirs(os.path.dirname(self.csv_path) or ".", exist_ok=True)
@@ -45,31 +45,17 @@ class CSVTradeLogger:
             df.to_csv(tmp, index=False, encoding="utf-8", lineterminator="\n")
             os.replace(tmp, self.csv_path)
 
-    # ------------------------------------------------------------
-    # Manual Backfill 
-    # ------------------------------------------------------------
-
     def manual_backfill(self, default_lookback_days: int = 365,
                         interval: str = "1d",
                         note: str = "manual backfill") -> bool:
-        """
-        Triggered by dashboard button.
-        Backfills ONLY missing dates since last_logged_day().
-        Has cooldown to avoid yfinance rate limits.
-        Returns True if new data was fetched, False otherwise.
-        """
-
         now = datetime.now(timezone.utc)
 
-        # Prevent spam-pressing
-        if self._last_backfill_ts and \
-           (now - self._last_backfill_ts).total_seconds() < self._cooldown_seconds:
+        if self._last_backfill_ts and (now - self._last_backfill_ts).total_seconds() < self._cooldown_seconds:
             return False
 
         today = now.date()
         last_day = self._last_logged_day()
 
-        # If no history exists, fetch up to 1 year
         if last_day is None:
             start_dt = today - timedelta(days=default_lookback_days)
         else:
@@ -78,7 +64,6 @@ class CSVTradeLogger:
         if start_dt > today:
             return False
 
-        # Use existing backfill method
         self.backfill_history(
             start=start_dt.strftime("%Y-%m-%d"),
             end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
@@ -89,61 +74,108 @@ class CSVTradeLogger:
         self._last_backfill_ts = now
         return True
 
-    # ------------------------------------------------------------
-    # History Fetching
-    # ------------------------------------------------------------
+    def _pace_api(self):
+        elapsed = time.time() - self._last_api_call_time
+        if elapsed < self._min_seconds_between_calls:
+            time.sleep(self._min_seconds_between_calls - elapsed)
+        self._last_api_call_time = time.time()
+
+    def _av_daily_close(self, symbol: str, api_key: str) -> pd.DataFrame:
+        self._pace_api()
+
+        params = {
+            "function": "TIME_SERIES_DAILY",
+            "symbol": symbol,
+            "outputsize": "full",
+            "datatype": "json",
+            "apikey": api_key
+        }
+
+        last_err = None
+        for attempt in range(3):
+            try:
+                r = requests.get(self.AV_URL, params=params, timeout=20)
+                r.raise_for_status()
+                data = r.json()
+
+                if "Error Message" in data:
+                    raise RuntimeError(f"AlphaVantage error for {symbol}: {data['Error Message']}")
+                if "Note" in data:
+                    raise RuntimeError(f"AlphaVantage throttle for {symbol}: {data['Note']}")
+                if "Information" in data:
+                    raise RuntimeError(f"AlphaVantage info for {symbol}: {data['Information']}")
+
+                ts = data.get("Time Series (Daily)")
+                if not ts:
+                    raise RuntimeError(f"AlphaVantage response missing 'Time Series (Daily)' for {symbol}")
+
+                rows = []
+                for d, ohlc in ts.items():
+                    close_str = ohlc.get("4. close")
+                    if close_str is None:
+                        continue
+                    rows.append((d, float(close_str)))
+
+                if not rows:
+                    return pd.DataFrame(columns=["close"])
+
+                df = pd.DataFrame(rows, columns=["date", "close"])
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.sort_values("date")
+                df = df.set_index("date")
+                return df[["close"]]
+
+            except Exception as e:
+                last_err = e
+                time.sleep(1.5 * (attempt + 1))
+
+        raise RuntimeError(f"AlphaVantage fetch failed for {symbol}: {last_err}")
 
     def backfill_history(self, start: str, end: Optional[str] = None,
                          interval: str = "1d", note: str = "history backfill"):
 
-        data = yf.download(
-            self.tickers,
-            start=start,
-            end=end,
-            interval=interval,
-            group_by='ticker',
-            auto_adjust=False,
-            progress=False
-        )
+        ALPHAVANTAGE_API_KEY = "PUT_YOUR_KEY_HERE"
+
+        start_dt = pd.to_datetime(start)
+        end_dt = pd.to_datetime(end) if end else None
 
         rows = []
         for t in self.tickers:
-            df = data[t] if t in getattr(data, "keys", lambda: [])() else data
-            if isinstance(df, pd.DataFrame) and "Close" in df.columns:
-                for ts, close in df["Close"].dropna().items():
-                    self._assert_price(close, t, "backfill")
+            df = self._av_daily_close(t, ALPHAVANTAGE_API_KEY)
+            if df.empty:
+                continue
 
-                    timestamp = (pd.Timestamp(ts)
-                                 .tz_localize(None)
-                                 .to_pydatetime()
-                                 .replace(tzinfo=timezone.utc)
-                                 .strftime("%Y-%m-%dT%H:%M:%SZ"))
+            df_f = df[df.index >= start_dt]
+            if end_dt is not None:
+                df_f = df_f[df_f.index < end_dt]
 
-                    row = {
-                        "timestamp": timestamp,
-                        "ticker": t,
-                        "close": float(close),
-                        "action": "NONE",
-                        "quantity": 0,
-                        "position_after": None,
-                        "cash_after": None,
-                        "note": note,
-                        "kind": "HISTORY",
-                        "price_source": "yfinance",
-                        "cash_delta": 0.0,
-                        "position_before": None,
-                        "out_of_order": False
-                    }
-                    row["event_id"] = self._event_id(row)
-                    rows.append(row)
+            for ts, close in df_f["close"].dropna().items():
+                self._assert_price(close, t, "backfill")
+
+                ts_utc = datetime(ts.year, ts.month, ts.day, tzinfo=timezone.utc)
+                timestamp = ts_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                row = {
+                    "timestamp": timestamp,
+                    "ticker": t,
+                    "close": float(close),
+                    "action": "NONE",
+                    "quantity": 0,
+                    "position_after": None,
+                    "cash_after": None,
+                    "note": note,
+                    "kind": "HISTORY",
+                    "price_source": "alphavantage",
+                    "cash_delta": 0.0,
+                    "position_before": None,
+                    "out_of_order": False
+                }
+                row["event_id"] = self._event_id(row)
+                rows.append(row)
 
         if rows:
             self._append_rows_atomic(rows)
             self._dedup_csv()
-
-    # ------------------------------------------------------------
-    # Realtime Logging
-    # ------------------------------------------------------------
 
     def log_now(self, prices: Dict[str, float], action_map: Dict[str, Dict],
                 positions_after: Dict[str, int], cash_after: float, note: str = ""):
@@ -205,10 +237,6 @@ class CSVTradeLogger:
 
         self._append_rows_atomic(rows)
         self._dedup_csv()
-
-    # ------------------------------------------------------------
-    # Utilities (unchanged)
-    # ------------------------------------------------------------
 
     def _last_logged_day(self) -> Optional[datetime]:
         if not os.path.exists(self.csv_path) or os.path.getsize(self.csv_path) == 0:
