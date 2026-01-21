@@ -134,7 +134,7 @@ class CSVTradeLogger:
     def backfill_history(self, start: str, end: Optional[str] = None,
                          interval: str = "1d", note: str = "history backfill"):
 
-        ALPHAVANTAGE_API_KEY = "PUT_YOUR_KEY_HERE"
+        ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY")
 
         start_dt = pd.to_datetime(start)
         end_dt = pd.to_datetime(end) if end else None
