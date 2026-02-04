@@ -8,6 +8,16 @@ import pandas as pd
 import requests
 
 
+#####implement eod fair price (auction price between 3:50 to  4:00). make sure that it is easy to add more
+#####underlyings as well. reconfirm to run the script as well to make sure that no API calling.
+#####also see if can implement yfinance to update the website constantly (believe there was a button for manual
+##### backfilling)
+##### make sure that holidays are also accounted for
+
+#### implement the money weighted return and time weighted return (preferably time weighted return)
+#### implement sharpe ratio, winrate, max drawdon, volatility
+
+
 class OptionsChainLogger:
     def __init__(
         self,
@@ -19,29 +29,32 @@ class OptionsChainLogger:
     ):
         self.csv_path = csv_path
         self.state_path = state_path
-        self.api_key = api_key  # set this explicitly OR use env var below
+        self.api_key = api_key
         self.max_calls_per_day = int(max_calls_per_day)
         self.min_seconds_between_calls = float(min_seconds_between_calls)
 
         self._last_call_ts: Optional[float] = None
         self._ensure_files()
 
-
-    def update_today(self, symbols: List[str]) -> bool:
-        """Fetch and append today's options chain for each symbol (weekdays only)."""
-        d = datetime.now(timezone.utc).date()
-        return self.update_for_date(symbols, d)
-
-    def update_for_date(self, symbols: List[str], d: date) -> bool:
+    def update_today(self, symbols: List[str], dry_run: bool = False) -> bool:
         """
-        Fetch and append options chains for a given date (weekdays only).
-        Returns True if anything new was written.
+        Fetch and append *today's* options chain for each symbol.
+        "Today" is computed in the market timezone:
+          - .TO tickers -> America/Toronto
+          - otherwise  -> America/New_York
         """
+        wrote_any = False
+        for sym in symbols:
+            d = self._local_market_date(sym)
+            wrote_any = self.update_for_date([sym], d, dry_run=dry_run) or wrote_any
+        return wrote_any
+
+    def update_for_date(self, symbols: List[str], d: date, dry_run: bool = False) -> bool:
         if not self._is_weekday(d):
             return False
 
-        api_key = self.api_key or os.getenv("ALPHAVANTAGE_API_KEY", "") #implement either explicitly or locally
-        if not api_key:
+        api_key = self.api_key or os.getenv("ALPHAVANTAGE_API_KEY", "")
+        if not api_key and not dry_run:
             raise ValueError("Missing Alpha Vantage API key. Set api_key=... or ALPHAVANTAGE_API_KEY env var.")
 
         state = self._load_state()
@@ -49,11 +62,16 @@ class OptionsChainLogger:
 
         wrote_any = False
         for sym in symbols:
-            if not self._can_call_today(state):
+            if not self._can_call_today(state) and not dry_run:
                 return wrote_any
 
             already_done = state.get("done", {}).get(day_key, {}).get(sym, False)
             if already_done:
+                continue
+
+            if dry_run:
+                self._mark_done(state, day_key, sym, wrote=False)
+                self._save_state(state)
                 continue
 
             df = self._fetch_historical_options(sym, day_key, api_key)
@@ -75,12 +93,7 @@ class OptionsChainLogger:
 
         return wrote_any
 
-#alpha vantage 
     def _fetch_historical_options(self, symbol: str, day_iso: str, api_key: str) -> pd.DataFrame:
-        """
-        Calls Alpha Vantage HISTORICAL_OPTIONS for symbol+date.
-        Uses datatype=csv to get a flat table directly.
-        """
         url = "https://www.alphavantage.co/query"
         params = {
             "function": "HISTORICAL_OPTIONS",
@@ -106,7 +119,6 @@ class OptionsChainLogger:
 
         return df
 
-#storing
     def _append_and_dedup(self, df_new: pd.DataFrame) -> None:
         if os.path.exists(self.csv_path):
             df_old = pd.read_csv(self.csv_path)
@@ -114,14 +126,12 @@ class OptionsChainLogger:
         else:
             df_all = df_new
 
-        # DEDUP KEY (adjust column names if AlphaVantage uses different headers)
         key_cols = [c for c in ["asof_date", "underlying", "expiration", "strike", "type"] if c in df_all.columns]
         if key_cols:
             df_all = df_all.drop_duplicates(subset=key_cols, keep="last")
 
         df_all.to_csv(self.csv_path, index=False, encoding="utf-8", lineterminator="\n")
 
-#rate limiters
     def _ensure_files(self) -> None:
         if not os.path.exists(self.state_path):
             self._save_state({"calls": {}, "done": {}, "last_call_ts": None})
@@ -172,16 +182,30 @@ class OptionsChainLogger:
     def _is_weekday(d: date) -> bool:
         return d.weekday() < 5
 
+    @staticmethod
+    def _market_timezone(symbol: str) -> str:
+        return "America/Toronto" if symbol.upper().endswith(".TO") else "America/New_York"
+
+    def _local_market_date(self, symbol: str) -> date:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(self._market_timezone(symbol))
+            return datetime.now(tz).date()
+        except Exception:
+            return datetime.now(timezone.utc).date()
+
 
 if __name__ == "__main__":
     logger = OptionsChainLogger(
         csv_path="options_chain_history.csv",
         state_path="options_chain_state.json",
-        api_key="",  # <-- put key here OR set env var ALPHAVANTAGE_API_KEY
+        api_key="",  # leave blank if using ALPHAVANTAGE_API_KEY env var
         max_calls_per_day=75,
         min_seconds_between_calls=1.2,
     )
 
     symbols = ["BABA", "DOL.TO"]
-    ok = logger.update_today(symbols)
+
+    # first run to test
+    ok = logger.update_today(symbols, dry_run=False)
     print("Updated:", ok)
