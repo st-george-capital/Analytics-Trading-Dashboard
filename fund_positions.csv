@@ -1,0 +1,7 @@
+fund_id,symbol,side,asset_type,entry_date,entry_price,capital,thesis
+SGC_W2024,ALA.TO,long,equity,2024-01-01,28.31,,Long Position - AltaGas
+SGC_W2024,DOL.TO,long,equity,2024-01-01,97.03,,Long Position - Dollarama
+SGC_W2024,KILO.TO,long,equity,2024-01-01,30.51,,Long Position - Gold
+SGC_W2024,BABA,long,equity,2024-01-01,73.1,,Long Position - Alibaba
+SGC_W2024,L.TO,long,equity,2024-01-01,32.35,,Long Position - Loblaws
+SGC_W2024,WMB,long,equity,2024-01-01,54.13,,Long Position - Williams Companies
