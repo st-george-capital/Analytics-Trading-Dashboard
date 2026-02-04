@@ -1,10 +1,10 @@
+import os
+print("RUNNING FILE:", os.path.abspath(__file__))
 import pandas as pd
 
-OUT_PATH = "fund_positions.csv"
+OUT_PATH = "fund_positions_clean.csv"  
 FUND_ID = "SGC_W2024"
 
-# Fill these in manually.
-# change capital once known quantity
 POSITIONS = [
     {"symbol": "ALA.TO",  "entry_date": "2024-01-01", "entry_price": 28.31, "capital": None, "side": "long", "asset_type": "equity"},
     {"symbol": "DOL.TO",  "entry_date": "2024-01-01", "entry_price": 97.03, "capital": None, "side": "long", "asset_type": "equity"},
@@ -16,13 +16,23 @@ POSITIONS = [
 
 def main():
     df = pd.DataFrame(POSITIONS)
+
     df.insert(0, "fund_id", FUND_ID)
 
-    cols = ["fund_id", "symbol", "side", "asset_type", "entry_date", "entry_price", "capital", "thesis"]
-    df = df[cols]
+cols = ["fund_id", "symbol", "side", "asset_type", "entry_date", "entry_price", "capital"]
+df = df.reindex(columns=cols)
 
-    df.to_csv(OUT_PATH, index=False, encoding="utf-8", lineterminator="\n")
-    print(f"Wrote {len(df)} rows to {OUT_PATH}")
+
+    tmp_path = OUT_PATH + ".tmp"
+    df.to_csv(tmp_path, index=False, encoding="utf-8", lineterminator="\n")
+    os.replace(tmp_path, OUT_PATH)
+
+    abs_path = os.path.abspath(OUT_PATH)
+    print(f"Wrote {len(df)} rows to: {abs_path}")
+    print("Columns written:", df.columns.tolist())
+
+    check = pd.read_csv(OUT_PATH)
+    print("Columns read back:", check.columns.tolist())
 
 if __name__ == "__main__":
     main()
