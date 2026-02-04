@@ -6,12 +6,12 @@ FUND_ID = "SGC_W2024"
 # Fill these in manually.
 # change capital once known quantity
 POSITIONS = [
-    {"symbol": "ALA.TO",  "entry_date": "2024-01-01", "entry_price": 28.31, "capital": None, "side": "long", "asset_type": "equity", "thesis": "Long Position - AltaGas"},
-    {"symbol": "DOL.TO",  "entry_date": "2024-01-01", "entry_price": 97.03, "capital": None, "side": "long", "asset_type": "equity", "thesis": "Long Position - Dollarama"},
-    {"symbol": "KILO.TO", "entry_date": "2024-01-01", "entry_price": 30.51, "capital": None, "side": "long", "asset_type": "equity", "thesis": "Long Position - Gold"},
-    {"symbol": "BABA",    "entry_date": "2024-01-01", "entry_price": 73.10, "capital": None, "side": "long", "asset_type": "equity", "thesis": "Long Position - Alibaba"},
-    {"symbol": "L.TO",    "entry_date": "2024-01-01", "entry_price": 32.35, "capital": None, "side": "long", "asset_type": "equity", "thesis": "Long Position - Loblaws"},
-    {"symbol": "WMB",     "entry_date": "2024-01-01", "entry_price": 54.13, "capital": None, "side": "long", "asset_type": "equity", "thesis": "Long Position - Williams Companies"},
+    {"symbol": "ALA.TO",  "entry_date": "2024-01-01", "entry_price": 28.31, "capital": None, "side": "long", "asset_type": "equity"},
+    {"symbol": "DOL.TO",  "entry_date": "2024-01-01", "entry_price": 97.03, "capital": None, "side": "long", "asset_type": "equity"},
+    {"symbol": "KILO.TO", "entry_date": "2024-01-01", "entry_price": 30.51, "capital": None, "side": "long", "asset_type": "equity"},
+    {"symbol": "BABA",    "entry_date": "2024-01-01", "entry_price": 73.10, "capital": None, "side": "long", "asset_type": "equity"},
+    {"symbol": "L.TO",    "entry_date": "2024-01-01", "entry_price": 32.35, "capital": None, "side": "long", "asset_type": "equity"},
+    {"symbol": "WMB",     "entry_date": "2024-01-01", "entry_price": 54.13, "capital": None, "side": "long", "asset_type": "equity"},
 ]
 
 def main():
